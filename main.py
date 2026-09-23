@@ -55,12 +55,12 @@ KEYS_TO_BIND = [f"<Key-{i}>" for i in range(1, 10)] + \
 # Разработчик
 # ----------------------------------------------------------------------------
 DEVELOPER = {
-    "name":    "Беляев Михаил Михайлович",
+    "name":    "Беляев М.М.",
     "role":    "Заместитель директора по производству взрывных работ",
     "email":   "belyaev.m.m@nitros.ru",
     "org":     "АО НИТРО СИБИРЬ Норд Групп",
     "year":    "2026",
-    "version": "1.4",
+    "version": "1.5",
 }
 
 
@@ -319,10 +319,10 @@ class QuizApp:
         tk.Label(f, text="Выберите тест",
                  font=("Segoe UI", 12), bg=BG, fg="#444").pack(pady=(0, 15))
 
-        # --- сетка 3 колонки ---
+        # --- сетка 4 колонки ---
         grid = tk.Frame(f, bg=BG)
         grid.pack(fill="x", padx=10)
-        COLS = 3
+        COLS = 4
         for c in range(COLS):
             grid.columnconfigure(c, weight=1, uniform="testcard")
 
@@ -360,54 +360,63 @@ class QuizApp:
         self._add_footer(f)
 
     def _test_card(self, parent, row, col, test, covered, total, pct, acc):
-        """Компактная карточка теста — рассчитана на 3-колоночную сетку."""
-        CARD_W = 320
-        CARD_H = 130
+        """Плитка теста: цветная полоса, крупный процент, бар снизу."""
+        CARD_W = 350
+        CARD_H = 250
+        stripe_color = self._pct_color(pct) if pct > 0 else "#d0d5da"
 
         card = tk.Frame(parent, bg=CARD, bd=1, relief="solid",
                         width=CARD_W, height=CARD_H)
         card.grid(row=row, column=col, padx=8, pady=8)
-        # Фиксированный размер — карточки не растягиваются под содержимое
         card.pack_propagate(False)
 
-        inner = tk.Frame(card, bg=CARD)
-        inner.pack(fill="both", expand=True, padx=12, pady=10)
+        # Цветная полоса-индикатор сверху
+        stripe = tk.Frame(card, bg=stripe_color, height=5)
+        stripe.pack(fill="x")
 
-        # --- верхняя строка: код слева, процент справа ---
+        inner = tk.Frame(card, bg=CARD)
+        inner.pack(fill="both", expand=True, padx=14, pady=8)
+
+        # --- верх: код слева, точность справа ---
         top = tk.Frame(inner, bg=CARD)
         top.pack(fill="x")
 
         tk.Label(top, text=test["code"],
-                 font=("Segoe UI", 12, "bold"),
-                 bg=CARD, fg=ACCENT, anchor="w").pack(side="left")
+                 font=("Segoe UI", 11, "bold"),
+                 bg=CARD, fg=ACCENT).pack(side="left")
 
-        tk.Label(top, text=f"{pct}%",
-                 font=("Segoe UI", 15, "bold"),
-                 bg=CARD, fg=self._pct_color(pct)).pack(side="right")
+        if covered > 0:
+            tk.Label(top, text=f"точность {acc}%",
+                     font=("Segoe UI", 8),
+                     bg=CARD, fg="#999").pack(side="right")
 
-        # --- название: фиксированная высота 3 строки, длинные обрезаются ---
+        # --- центр: крупный процент ---
+        tk.Label(inner, text=f"{pct}%",
+                 font=("Segoe UI", 30, "bold"),
+                 bg=CARD, fg=stripe_color).pack(expand=True)
+
+        # --- низ: название, бар, число ---
+        bottom = tk.Frame(inner, bg=CARD)
+        bottom.pack(fill="x", side="bottom")
+
         title_text = test["title"] if test["title"] else "—"
-        tk.Label(inner, text=title_text,
-                 font=("Segoe UI", 9),
-                 bg=CARD, fg="#555",
+        tk.Label(bottom, text=title_text,
+                 font=("Segoe UI", 8),
+                 bg=CARD, fg="#666",
                  anchor="nw", justify="left",
                  wraplength=CARD_W - 30,
-                 height=3).pack(fill="x", pady=(4, 4))
+                 height=3).pack(fill="x")
 
-        # --- снизу: полоска прогресса и подпись ---
-        bar_row = tk.Frame(inner, bg=CARD)
-        bar_row.pack(fill="x", side="bottom", pady=(0, 4))
+        bar_row = tk.Frame(bottom, bg=CARD)
+        bar_row.pack(fill="x", pady=(3, 0))
 
         bar = ttk.Progressbar(bar_row, value=pct, maximum=100,
                               style="Test.Horizontal.TProgressbar")
-        bar.pack(fill="x")
+        bar.pack(side="left", fill="x", expand=True)
 
-        info_text = f"{covered}/{total}"
-        if covered:
-            info_text += f"  •  точность {acc}%"
-        tk.Label(inner, text=info_text,
+        tk.Label(bar_row, text=f"  {covered}/{total}",
                  font=("Segoe UI", 8),
-                 bg=CARD, fg="#888", anchor="w").pack(fill="x", side="bottom")
+                 bg=CARD, fg="#888").pack(side="left")
 
         self._bind_card_click(card, test)
 
