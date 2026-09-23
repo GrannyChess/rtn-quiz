@@ -17,7 +17,6 @@ def _resource_dir() -> Path:
     return Path(__file__).parent
 
 def _app_dir() -> Path:
-    """Где лежат tests/ и .exe (или скрипт)."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
     return Path(__file__).parent
@@ -37,6 +36,7 @@ def _user_data_dir() -> Path:
     return d
 
 DB_FILE = _user_data_dir() / "progress.db"
+WINDOW_STATE_FILE = _user_data_dir() / "window_state.json"
 
 # ----------------------------------------------------------------------------
 # Оформление
@@ -52,15 +52,15 @@ KEYS_TO_BIND = [f"<Key-{i}>" for i in range(1, 10)] + \
                ["<Return>", "<KP_Enter>", "<Escape>"]
 
 # ----------------------------------------------------------------------------
-# Разработчик — меняйте под себя
+# Разработчик
 # ----------------------------------------------------------------------------
 DEVELOPER = {
     "name":    "Беляев Михаил Михайлович",
     "role":    "Заместитель директора по производству взрывных работ",
     "email":   "belyaev.m.m@nitros.ru",
-    "org":     "АО «НИТРО СИБИРЬ Норд Групп»",
+    "org":     "АО НИТРО СИБИРЬ Норд Групп",
     "year":    "2026",
-    "version": "1.2",
+    "version": "1.3",
 }
 
 
@@ -68,11 +68,6 @@ DEVELOPER = {
 # Загрузка тестов
 # ----------------------------------------------------------------------------
 def discover_tests() -> list[dict]:
-    """
-    Ищет:
-      • tests/*.json  рядом с .exe / скриптом
-      • одиночный questions.json (для совместимости со старой версией)
-    """
     tests = []
     app_dir = _app_dir()
 
@@ -107,7 +102,6 @@ def discover_tests() -> list[dict]:
 
 
 def load_test(path: Path):
-    """Возвращает (meta, questions)."""
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if isinstance(data, dict) and "questions" in data:
@@ -125,7 +119,6 @@ class QuizApp:
         self.root = root
         self.root.title(
             f"РТН — тесты по промбезопасности  •  v{DEVELOPER['version']}")
-        self.root.state("zoomed")
         self.root.configure(bg=BG)
 
         self.conn = sqlite3.connect(str(DB_FILE))
@@ -160,6 +153,7 @@ class QuizApp:
         self.selected_var = None
 
         self._build_style()
+        self._restore_window_state()
         self.show_test_select()
 
     # ---------------------------------------------------------- БД
@@ -170,6 +164,7 @@ class QuizApp:
             qid INTEGER,
             ok INTEGER DEFAULT 0,
             fail INTEGER DEFAULT 0,
+            is_mistake INTEGER DEFAULT 0,
             last TEXT,
             PRIMARY KEY(test_key, qid))""")
         cur.execute("""CREATE TABLE IF NOT EXISTS sessions(
@@ -179,21 +174,37 @@ class QuizApp:
             total INTEGER,
             score INTEGER,
             date TEXT)""")
+
+        # Миграция: добавляем is_mistake, если база создана ранее
+        cur.execute("PRAGMA table_info(stats)")
+        cols = {row[1] for row in cur.fetchall()}
+        if "is_mistake" not in cols:
+            cur.execute(
+                "ALTER TABLE stats ADD COLUMN is_mistake INTEGER DEFAULT 0")
+            cur.execute(
+                "UPDATE stats SET is_mistake = "
+                "CASE WHEN fail > 0 THEN 1 ELSE 0 END")
         self.conn.commit()
 
-    def _record(self, qid, is_ok):
+    def _record(self, qid, is_ok, in_wrong_mode=False):
         cur = self.conn.cursor()
         cur.execute(
             "INSERT OR IGNORE INTO stats(test_key, qid) VALUES(?,?)",
             (self.current_test_key, qid))
+
         if is_ok:
             cur.execute(
                 "UPDATE stats SET ok = ok + 1, last = ? "
                 "WHERE test_key = ? AND qid = ?",
                 (datetime.now().isoformat(), self.current_test_key, qid))
+            if in_wrong_mode:
+                cur.execute(
+                    "UPDATE stats SET is_mistake = 0 "
+                    "WHERE test_key = ? AND qid = ?",
+                    (self.current_test_key, qid))
         else:
             cur.execute(
-                "UPDATE stats SET fail = fail + 1, last = ? "
+                "UPDATE stats SET fail = fail + 1, is_mistake = 1, last = ? "
                 "WHERE test_key = ? AND qid = ?",
                 (datetime.now().isoformat(), self.current_test_key, qid))
         self.conn.commit()
@@ -203,12 +214,13 @@ class QuizApp:
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("TButton", font=("Segoe UI", 11), padding=8)
-        style.configure("Big.TButton", font=("Segoe UI", 12, "bold"), padding=12)
+        style.configure("Big.TButton",
+                        font=("Segoe UI", 12, "bold"), padding=12)
         style.configure("Test.Horizontal.TProgressbar",
-            background=ACCENT,
-            troughcolor="#e4e9ef",
-            borderwidth=0,
-            thickness=14)
+                        background=ACCENT,
+                        troughcolor="#e4e9ef",
+                        borderwidth=0,
+                        thickness=10)
 
     def _unbind_keys(self):
         for k in KEYS_TO_BIND:
@@ -225,55 +237,72 @@ class QuizApp:
         self.check_vars = []
         self.selected_var = None
 
+    def _restore_window_state(self):
+        default = {"geometry": "1000x780", "zoomed": True}
+        state = default
+        try:
+            if WINDOW_STATE_FILE.exists():
+                state = json.loads(WINDOW_STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            state = default
+
+        try:
+            self.root.geometry(state.get("geometry", "1000x780"))
+        except Exception:
+            self.root.geometry("1000x780")
+
+        if state.get("zoomed"):
+            try:
+                self.root.state("zoomed")
+            except tk.TclError:
+                try:
+                    self.root.attributes("-zoomed", True)
+                except tk.TclError:
+                    pass
+
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        try:
+            zoomed = (self.root.state() == "zoomed")
+            geom = self.root.geometry()
+            WINDOW_STATE_FILE.write_text(
+                json.dumps({"geometry": geom, "zoomed": zoomed}),
+                encoding="utf-8")
+        except Exception:
+            pass
+        self.root.destroy()
+
     def _add_footer(self, parent, compact=False):
-        """
-        Единый футер: разработчик + путь к БД.
-        compact=True — короткая версия (для экрана статистики).
-        """
         sep = tk.Frame(parent, bg="#d8dde3", height=1)
         sep.pack(side="bottom", fill="x", padx=20, pady=(10, 0))
 
         holder = tk.Frame(parent, bg=BG)
         holder.pack(side="bottom", fill="x", pady=(6, 10))
 
-        tk.Label(
-            holder,
-            text=f"Прогресс: {DB_FILE}",
-            font=("Segoe UI", 8),
-            bg=BG, fg=GREY,
-        ).pack()
+        tk.Label(holder, text=f"Прогресс: {DB_FILE}",
+                 font=("Segoe UI", 8), bg=BG, fg=GREY).pack()
 
         if compact:
             tk.Label(
                 holder,
                 text=(f"Разработчик: {DEVELOPER['name']}  •  "
                       f"v{DEVELOPER['version']}  •  © {DEVELOPER['year']}"),
-                font=("Segoe UI", 9),
-                bg=BG, fg="#555",
+                font=("Segoe UI", 9), bg=BG, fg="#555",
             ).pack(pady=(2, 0))
             return
 
-        tk.Label(
-            holder,
-            text=f"Разработчик: {DEVELOPER['name']}",
-            font=("Segoe UI", 10, "bold"),
-            bg=BG, fg=ACCENT,
-        ).pack(pady=(4, 0))
-
-        tk.Label(
-            holder,
-            text=f"{DEVELOPER['role']}  •  {DEVELOPER['email']}",
-            font=("Segoe UI", 9),
-            bg=BG, fg="#555",
-        ).pack()
-
-        tk.Label(
-            holder,
-            text=f"© {DEVELOPER['year']} {DEVELOPER['org']}  •  "
-                 f"Версия {DEVELOPER['version']}",
-            font=("Segoe UI", 9),
-            bg=BG, fg=GREY,
-        ).pack(pady=(0, 2))
+        tk.Label(holder,
+                 text=f"Разработчик: {DEVELOPER['name']}",
+                 font=("Segoe UI", 10, "bold"),
+                 bg=BG, fg=ACCENT).pack(pady=(4, 0))
+        tk.Label(holder,
+                 text=f"{DEVELOPER['role']}  •  {DEVELOPER['email']}",
+                 font=("Segoe UI", 9), bg=BG, fg="#555").pack()
+        tk.Label(holder,
+                 text=f"© {DEVELOPER['year']} {DEVELOPER['org']}  •  "
+                      f"Версия {DEVELOPER['version']}",
+                 font=("Segoe UI", 9), bg=BG, fg=GREY).pack(pady=(0, 2))
 
     # ---------------------------------------------------------- выбор теста
     def show_test_select(self):
@@ -282,17 +311,23 @@ class QuizApp:
         self.current_test_key = None
 
         f = tk.Frame(self.root, bg=BG)
-        f.pack(expand=True, fill="both", padx=40, pady=20)
+        f.pack(expand=True, fill="both", padx=20, pady=15)
 
         tk.Label(f, text="РТН — подготовка к аттестации",
-                 font=("Segoe UI", 24, "bold"),
-                 bg=BG, fg=ACCENT).pack(pady=(10, 5))
+                 font=("Segoe UI", 22, "bold"),
+                 bg=BG, fg=ACCENT).pack(pady=(5, 3))
         tk.Label(f, text="Выберите тест",
-                 font=("Segoe UI", 13), bg=BG, fg="#444").pack(pady=(0, 20))
+                 font=("Segoe UI", 12), bg=BG, fg="#444").pack(pady=(0, 15))
+
+        # --- сетка 3 колонки ---
+        grid = tk.Frame(f, bg=BG)
+        grid.pack(fill="x", padx=10)
+        COLS = 3
+        for c in range(COLS):
+            grid.columnconfigure(c, weight=1, uniform="testcard")
 
         cur = self.conn.cursor()
-        for t in self.tests:
-            # --- статистика по тесту ---
+        for i, t in enumerate(self.tests):
             covered = cur.execute(
                 "SELECT COUNT(*) FROM stats WHERE test_key = ? "
                 "AND (ok + fail) > 0",
@@ -316,62 +351,68 @@ class QuizApp:
             acc = round(ok_sum / (ok_sum + fail_sum) * 100) \
                   if (ok_sum + fail_sum) else 0
 
-            self._test_card(f, t, covered, total, pct, acc)
+            self._test_card(grid, i // COLS, i % COLS, t,
+                            covered, total, pct, acc)
 
         ttk.Button(f, text="🚪  Выход", style="Big.TButton",
-                   width=70, command=self.root.quit).pack(pady=(20, 5))
+                   width=30, command=self.root.quit).pack(pady=(20, 5))
 
         self._add_footer(f)
 
-    def _test_card(self, parent, test, covered, total, pct, acc):
-        """Карточка теста: код, название, прогресс-бар и проценты."""
-        card = tk.Frame(parent, bg=CARD, bd=1, relief="solid")
-        card.pack(fill="x", padx=20, pady=5)
+    def _test_card(self, parent, row, col, test, covered, total, pct, acc):
+        """Компактная карточка теста — рассчитана на 3-колоночную сетку."""
+        CARD_W = 320
+        CARD_H = 130
+
+        card = tk.Frame(parent, bg=CARD, bd=1, relief="solid",
+                        width=CARD_W, height=CARD_H)
+        card.grid(row=row, column=col, padx=8, pady=8)
+        # Фиксированный размер — карточки не растягиваются под содержимое
+        card.pack_propagate(False)
+
+        inner = tk.Frame(card, bg=CARD)
+        inner.pack(fill="both", expand=True, padx=12, pady=10)
 
         # --- верхняя строка: код слева, процент справа ---
-        top = tk.Frame(card, bg=CARD)
-        top.pack(fill="x", padx=15, pady=(10, 2))
+        top = tk.Frame(inner, bg=CARD)
+        top.pack(fill="x")
 
         tk.Label(top, text=test["code"],
-                 font=("Segoe UI", 14, "bold"),
+                 font=("Segoe UI", 12, "bold"),
                  bg=CARD, fg=ACCENT, anchor="w").pack(side="left")
 
         tk.Label(top, text=f"{pct}%",
-                 font=("Segoe UI", 16, "bold"),
+                 font=("Segoe UI", 15, "bold"),
                  bg=CARD, fg=self._pct_color(pct)).pack(side="right")
 
-        # --- название ---
-        if test["title"]:
-            tk.Label(card, text=test["title"], font=("Segoe UI", 10),
-                     bg=CARD, fg="#555", anchor="w",
-                     wraplength=850, justify="left"
-                     ).pack(fill="x", padx=15)
+        # --- название: фиксированная высота 3 строки, длинные обрезаются ---
+        title_text = test["title"] if test["title"] else "—"
+        tk.Label(inner, text=title_text,
+                 font=("Segoe UI", 9),
+                 bg=CARD, fg="#555",
+                 anchor="nw", justify="left",
+                 wraplength=CARD_W - 30,
+                 height=3).pack(fill="x", pady=(4, 4))
 
-        # --- строка с прогресс-баром ---
-        bar_row = tk.Frame(card, bg=CARD)
-        bar_row.pack(fill="x", padx=15, pady=(6, 10))
+        # --- снизу: полоска прогресса и подпись ---
+        bar_row = tk.Frame(inner, bg=CARD)
+        bar_row.pack(fill="x", side="bottom", pady=(0, 4))
 
-        bar = ttk.Progressbar(bar_row, length=400,
-                              value=pct, maximum=100,
+        bar = ttk.Progressbar(bar_row, value=pct, maximum=100,
                               style="Test.Horizontal.TProgressbar")
-        bar.pack(side="left", fill="x", expand=True)
+        bar.pack(fill="x")
 
-        tk.Label(bar_row, text=f"  {covered} / {total} ({pct}%)",
-                 font=("Segoe UI", 10),
-                 bg=CARD, fg="#666").pack(side="left")
+        info_text = f"{covered}/{total}"
+        if covered:
+            info_text += f"  •  точность {acc}%"
+        tk.Label(inner, text=info_text,
+                 font=("Segoe UI", 8),
+                 bg=CARD, fg="#888", anchor="w").pack(fill="x", side="bottom")
 
-        if covered > 0:
-            tk.Label(bar_row, text=f"  •  точность {acc}%",
-                     font=("Segoe UI", 10),
-                     bg=CARD, fg="#888").pack(side="left")
-
-        # --- клик по всей карточке ---
         self._bind_card_click(card, test)
 
     def _bind_card_click(self, widget, test):
-        """Рекурсивно навешивает клик на карточку и всех её детей."""
-        widget.bind("<Button-1>",
-                    lambda e, t=test: self.open_test(t))
+        widget.bind("<Button-1>", lambda e, t=test: self.open_test(t))
         try:
             widget.configure(cursor="hand2")
         except Exception:
@@ -380,7 +421,6 @@ class QuizApp:
             self._bind_card_click(child, test)
 
     def _pct_color(self, pct):
-        """Цвет процента: серый → синий → янтарный → зелёный."""
         if pct >= 90:
             return OK
         if pct >= 50:
@@ -405,29 +445,39 @@ class QuizApp:
     def show_menu(self):
         self._clear()
         f = tk.Frame(self.root, bg=BG)
-        f.pack(expand=True, fill="both", padx=40, pady=30)
+        f.pack(expand=True, fill="both", padx=40, pady=20)
 
         t = self.current_test
-        tk.Label(f, text=t["code"], font=("Segoe UI", 32, "bold"),
-                 bg=BG, fg=ACCENT).pack(pady=(20, 0))
+        tk.Label(f, text=t["code"], font=("Segoe UI", 28, "bold"),
+                 bg=BG, fg=ACCENT).pack(pady=(10, 0))
         if t["title"]:
-            tk.Label(f, text=t["title"], font=("Segoe UI", 12),
+            tk.Label(f, text=t["title"], font=("Segoe UI", 11),
                      bg=BG, fg="#444",
-                     wraplength=800).pack(pady=(0, 25))
+                     wraplength=800).pack(pady=(0, 20))
 
         def btn(text, cmd):
             ttk.Button(f, text=text, command=cmd,
-                       style="Big.TButton", width=42).pack(pady=6)
+                       style="Big.TButton", width=42).pack(pady=5)
 
         total = len(self.questions)
+
+        # Сколько сейчас в списке ошибок
+        cur = self.conn.cursor()
+        mistakes_cnt = cur.execute(
+            "SELECT COUNT(*) FROM stats WHERE test_key = ? AND is_mistake = 1",
+            (self.current_test_key,)).fetchone()[0]
+        wrong_label = f"🔁  Работа над ошибками ({mistakes_cnt})"
+
         btn(f"🏁  Марафон: {total} вопросов вразнобой",
             lambda: self.start("all"))
         btn(f"📚  Все вопросы по порядку ({total})",
             lambda: self.start("all_ordered"))
         btn("🎲  Случайные 20 вопросов",
             lambda: self.start("random"))
-        btn("🔁  Работа над ошибками",
+        btn(wrong_label,
             lambda: self.start("wrong"))
+        btn("🧹  Очистить список ошибок",
+            self.reset_mistakes)
         btn("📊  Статистика",
             self.show_stats)
         btn("🗑  Сбросить прогресс по этому тесту",
@@ -450,12 +500,21 @@ class QuizApp:
         elif mode == "wrong":
             cur = self.conn.cursor()
             rows = cur.execute(
-                "SELECT qid FROM stats WHERE test_key = ? AND fail > 0",
+                "SELECT qid FROM stats "
+                "WHERE test_key = ? AND is_mistake = 1 "
+                "ORDER BY last ASC",
                 (self.current_test_key,)).fetchall()
-            ids = [r[0] for r in rows]
+            seen = set()
+            ids = []
+            for r in rows:
+                if r[0] not in seen:
+                    seen.add(r[0])
+                    ids.append(r[0])
             if not ids:
-                messagebox.showinfo("Работа над ошибками",
-                    "Ошибок пока нет — начните с обычного теста.")
+                messagebox.showinfo(
+                    "Работа над ошибками",
+                    "Список ошибок пуст.\n"
+                    "Либо вы всё выучили, либо ещё не ошибались.")
                 return
         else:
             return
@@ -469,7 +528,6 @@ class QuizApp:
 
     # ---------------------------------------------------------- подготовка
     def _prepare_question(self, q):
-        """В марафоне перемешиваем варианты (индексы правильных пересчитываем)."""
         q = dict(q)
         if self.mode != "all":
             return q
@@ -621,7 +679,7 @@ class QuizApp:
         correct = set(q["correct"])
         is_ok = sel == correct
 
-        self._record(q["id"], is_ok)
+        self._record(q["id"], is_ok, in_wrong_mode=(self.mode == "wrong"))
         if is_ok:
             self.score += 1
             self.feedback.config(text="✅ Верно!", fg=OK)
@@ -675,9 +733,15 @@ class QuizApp:
         tk.Label(f, text=msg, font=("Segoe UI", 13),
                  bg=BG, fg=color).pack(pady=10)
 
-        if self.wrong_ids:
+        if self.mode == "wrong" and self.wrong_ids:
+            tk.Label(f,
+                     text=f"Осталось в списке ошибок: "
+                          f"{len(self.wrong_ids)}",
+                     font=("Segoe UI", 11), bg=BG, fg="#555").pack(pady=(15, 0))
+        elif self.wrong_ids:
             tk.Label(f, text="Вопросы, где были ошибки:",
-                     font=("Segoe UI", 11, "bold"), bg=BG).pack(pady=(20, 5))
+                     font=("Segoe UI", 11, "bold"),
+                     bg=BG).pack(pady=(20, 5))
             tk.Label(f, text=", ".join(map(str, self.wrong_ids)),
                      font=("Segoe UI", 10), bg=BG,
                      wraplength=800).pack()
@@ -707,10 +771,15 @@ class QuizApp:
         total_fail = sum(r[1] for r in rows)
         covered = len(rows)
         total_q = len(self.questions)
+        mistakes = cur.execute(
+            "SELECT COUNT(*) FROM stats "
+            "WHERE test_key = ? AND is_mistake = 1",
+            (self.current_test_key,)).fetchone()[0]
 
         info = (
             f"Всего вопросов в тесте: {total_q}\n"
             f"Затронуто вопросов:     {covered}\n"
+            f"В списке ошибок:        {mistakes}\n"
             f"Правильных ответов:     {total_ok}\n"
             f"Ошибочных ответов:      {total_fail}\n"
             f"Общий процент:          "
@@ -749,6 +818,32 @@ class QuizApp:
                    command=self.show_menu).pack(pady=20)
 
         self._add_footer(f, compact=True)
+
+    def reset_mistakes(self):
+        cur = self.conn.cursor()
+        cnt = cur.execute(
+            "SELECT COUNT(*) FROM stats "
+            "WHERE test_key = ? AND is_mistake = 1",
+            (self.current_test_key,)).fetchone()[0]
+
+        if not cnt:
+            messagebox.showinfo("Очистка ошибок",
+                                "Список ошибок уже пуст.")
+            return
+
+        if not messagebox.askyesno(
+                "Очистка ошибок",
+                f"Убрать {cnt} вопрос(ов) из списка ошибок?\n\n"
+                "Статистика правильных/неправильных ответов сохранится — "
+                "очистится только сам список «надо повторить»."):
+            return
+
+        cur.execute(
+            "UPDATE stats SET is_mistake = 0 WHERE test_key = ?",
+            (self.current_test_key,))
+        self.conn.commit()
+        messagebox.showinfo("Готово",
+                            f"{cnt} вопрос(ов) убрано из списка ошибок.")
 
     def reset_progress(self):
         if not messagebox.askyesno(
