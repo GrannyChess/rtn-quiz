@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Прогресс и служебные файлы
+progress.db
+window_state.json
+
+# Бэкапы и рабочие файлы
+tests_backup*/
+*.bak
+*.tmp
+~$*
+
+# Редакторы
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
