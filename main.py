@@ -86,7 +86,7 @@ DEVELOPER = {
     "email":   "belyaev.m.m@nitros.ru",
     "org":     "АО НИТРО СИБИРЬ Норд Групп",
     "year":    "2026",
-    "version": "1.7",
+    "version": "1.7.1",
 }
 
 
