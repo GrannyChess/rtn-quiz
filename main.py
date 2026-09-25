@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import random
 import sqlite3
@@ -37,16 +38,41 @@ def _user_data_dir() -> Path:
 
 DB_FILE = _user_data_dir() / "progress.db"
 WINDOW_STATE_FILE = _user_data_dir() / "window_state.json"
+SETTINGS_FILE = _user_data_dir() / "settings.json"
 
 # ----------------------------------------------------------------------------
-# Оформление
+# Темы
 # ----------------------------------------------------------------------------
-BG     = "#f4f6f8"
-CARD   = "#ffffff"
-ACCENT = "#2c6fbb"
-OK     = "#1e7a3c"
-ERR    = "#b3261e"
-GREY   = "#888"
+THEMES = {
+    "light": {
+        "BG":      "#f4f6f8",
+        "CARD":    "#ffffff",
+        "ACCENT":  "#2c6fbb",
+        "OK":      "#1e7a3c",
+        "ERR":     "#b3261e",
+        "GREY":    "#888888",
+        "TEXT":    "#222222",
+        "SUBTLE":  "#555555",
+        "SEP":     "#d8dde3",
+        "TRACK":   "#e4e9ef",
+        "STRIPE":  "#d0d5da",
+        "HOVER_BG": "#dbe4ee",
+    },
+    "dark": {
+        "BG":      "#1e2228",
+        "CARD":    "#282e35",
+        "ACCENT":  "#4a90e2",
+        "OK":      "#2ecc71",
+        "ERR":     "#e74c3c",
+        "GREY":    "#7a828c",
+        "TEXT":    "#e8e8e8",
+        "SUBTLE":  "#b0b8c0",
+        "SEP":     "#3a4048",
+        "TRACK":   "#3a4048",
+        "STRIPE":  "#4a5058",
+        "HOVER_BG": "#3a4452",
+    },
+}
 
 KEYS_TO_BIND = [f"<Key-{i}>" for i in range(1, 10)] + \
                ["<Return>", "<KP_Enter>", "<Escape>"]
@@ -60,7 +86,7 @@ DEVELOPER = {
     "email":   "belyaev.m.m@nitros.ru",
     "org":     "АО НИТРО СИБИРЬ Норд Групп",
     "year":    "2026",
-    "version": "1.6",
+    "version": "1.7",
 }
 
 
@@ -119,7 +145,11 @@ class QuizApp:
         self.root = root
         self.root.title(
             f"РТН — тесты по промбезопасности  •  v{DEVELOPER['version']}")
-        self.root.configure(bg=BG)
+        self.root.configure(bg=THEMES["light"]["BG"])
+
+        # --- настройки (тема) ---
+        self.settings = self._load_settings()
+        self._apply_theme_colors(self.settings.get("theme", "light"))
 
         self.conn = sqlite3.connect(str(DB_FILE))
         self._init_db()
@@ -156,6 +186,51 @@ class QuizApp:
         self._restore_window_state()
         self.show_test_select()
 
+    # ---------------------------------------------------------- настройки
+    def _load_settings(self) -> dict:
+        try:
+            if SETTINGS_FILE.exists():
+                return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {"theme": "light"}
+
+    def _save_settings(self):
+        try:
+            SETTINGS_FILE.write_text(
+                json.dumps(self.settings, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        except Exception:
+            pass
+
+    def _apply_theme_colors(self, name: str):
+        if name not in THEMES:
+            name = "light"
+        self.settings["theme"] = name
+        t = THEMES[name]
+        self.BG      = t["BG"]
+        self.CARD    = t["CARD"]
+        self.ACCENT  = t["ACCENT"]
+        self.OK      = t["OK"]
+        self.ERR     = t["ERR"]
+        self.GREY    = t["GREY"]
+        self.TEXT    = t["TEXT"]
+        self.SUBTLE  = t["SUBTLE"]
+        self.SEP     = t["SEP"]
+        self.TRACK   = t["TRACK"]
+        self.STRIPE  = t["STRIPE"]
+        self.HOVER_BG = t["HOVER_BG"]
+        try:
+            self.root.configure(bg=self.BG)
+        except Exception:
+            pass
+
+    def toggle_theme(self):
+        new = "dark" if self.settings.get("theme", "light") == "light" else "light"
+        self._apply_theme_colors(new)
+        self._save_settings()
+        self.show_test_select()
+
     # ---------------------------------------------------------- БД
     def _init_db(self):
         cur = self.conn.cursor()
@@ -175,7 +250,6 @@ class QuizApp:
             score INTEGER,
             date TEXT)""")
 
-        # Миграция: добавляем is_mistake, если база создана ранее
         cur.execute("PRAGMA table_info(stats)")
         cols = {row[1] for row in cur.fetchall()}
         if "is_mistake" not in cols:
@@ -213,14 +287,54 @@ class QuizApp:
     def _build_style(self):
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("TButton", font=("Segoe UI", 11), padding=8)
+
+        # --- обычная кнопка ---
+        style.configure("TButton",
+                        font=("Segoe UI", 11),
+                        padding=8,
+                        background=self.CARD,
+                        foreground=self.TEXT,
+                        bordercolor=self.SEP,
+                        focuscolor=self.CARD,
+                        relief="flat")
+        style.map("TButton",
+                  background=[("pressed",  self.ACCENT),
+                              ("active",   self.HOVER_BG),
+                              ("!disabled", self.CARD)],
+                  foreground=[("pressed",  "#ffffff"),
+                              ("active",   self.TEXT),
+                              ("!disabled", self.TEXT)],
+                  bordercolor=[("active",  self.ACCENT)])
+
+        # --- большая кнопка (меню теста) ---
         style.configure("Big.TButton",
-                        font=("Segoe UI", 12, "bold"), padding=12)
+                        font=("Segoe UI", 12, "bold"),
+                        padding=12,
+                        background=self.CARD,
+                        foreground=self.TEXT,
+                        bordercolor=self.SEP,
+                        focuscolor=self.CARD,
+                        relief="flat")
+        style.map("Big.TButton",
+                  background=[("pressed",  self.ACCENT),
+                              ("active",   self.HOVER_BG),
+                              ("!disabled", self.CARD)],
+                  foreground=[("pressed",  "#ffffff"),
+                              ("active",   self.TEXT),
+                              ("!disabled", self.TEXT)],
+                  bordercolor=[("active",  self.ACCENT)])
+
+        # --- прогресс-бары ---
         style.configure("Test.Horizontal.TProgressbar",
-                        background=ACCENT,
-                        troughcolor="#e4e9ef",
+                        background=self.ACCENT,
+                        troughcolor=self.TRACK,
                         borderwidth=0,
                         thickness=10)
+        style.configure("Thin.Horizontal.TProgressbar",
+                        background=self.ACCENT,
+                        troughcolor=self.TRACK,
+                        borderwidth=0,
+                        thickness=6)
 
     def _unbind_keys(self):
         for k in KEYS_TO_BIND:
@@ -274,35 +388,58 @@ class QuizApp:
         self.root.destroy()
 
     def _add_footer(self, parent, compact=False):
-        sep = tk.Frame(parent, bg="#d8dde3", height=1)
+        sep = tk.Frame(parent, bg=self.SEP, height=1)
         sep.pack(side="bottom", fill="x", padx=20, pady=(10, 0))
 
-        holder = tk.Frame(parent, bg=BG)
+        holder = tk.Frame(parent, bg=self.BG)
         holder.pack(side="bottom", fill="x", pady=(6, 10))
 
         tk.Label(holder, text=f"Прогресс: {DB_FILE}",
-                 font=("Segoe UI", 8), bg=BG, fg=GREY).pack()
+                 font=("Segoe UI", 8), bg=self.BG, fg=self.GREY).pack()
 
         if compact:
             tk.Label(
                 holder,
                 text=(f"Разработчик: {DEVELOPER['name']}  •  "
                       f"v{DEVELOPER['version']}  •  © {DEVELOPER['year']}"),
-                font=("Segoe UI", 9), bg=BG, fg="#555",
+                font=("Segoe UI", 9), bg=self.BG, fg=self.SUBTLE,
             ).pack(pady=(2, 0))
             return
 
         tk.Label(holder,
                  text=f"Разработчик: {DEVELOPER['name']}",
                  font=("Segoe UI", 10, "bold"),
-                 bg=BG, fg=ACCENT).pack(pady=(4, 0))
+                 bg=self.BG, fg=self.ACCENT).pack(pady=(4, 0))
         tk.Label(holder,
                  text=f"{DEVELOPER['role']}  •  {DEVELOPER['email']}",
-                 font=("Segoe UI", 9), bg=BG, fg="#555").pack()
+                 font=("Segoe UI", 9), bg=self.BG, fg=self.SUBTLE).pack()
         tk.Label(holder,
                  text=f"© {DEVELOPER['year']} {DEVELOPER['org']}  •  "
                       f"Версия {DEVELOPER['version']}",
-                 font=("Segoe UI", 9), bg=BG, fg=GREY).pack(pady=(0, 2))
+                 font=("Segoe UI", 9), bg=self.BG, fg=self.GREY).pack(pady=(0, 2))
+
+    # ---------------------------------------------------------- переключатель темы
+    def _add_theme_toggle(self, parent):
+        """Маленькая иконка 🌙/☀ в правом верхнем углу экрана."""
+        is_light = self.settings.get("theme", "light") == "light"
+        icon = "🌙" if is_light else "☀"
+        hint = "Тёмная тема" if is_light else "Светлая тема"
+
+        holder = tk.Frame(parent, bg=self.BG)
+        holder.place(relx=1.0, rely=0.0, anchor="ne", x=-12, y=10)
+
+        lbl = tk.Label(holder, text=icon,
+                       font=("Segoe UI", 18),
+                       bg=self.BG, fg=self.ACCENT,
+                       cursor="hand2")
+        lbl.pack()
+        lbl.bind("<Button-1>", lambda e: self.toggle_theme())
+
+        tip = tk.Label(holder, text=hint,
+                       font=("Segoe UI", 8),
+                       bg=self.BG, fg=self.GREY, cursor="hand2")
+        tip.pack()
+        tip.bind("<Button-1>", lambda e: self.toggle_theme())
 
     # ---------------------------------------------------------- выбор теста
     def show_test_select(self):
@@ -310,17 +447,18 @@ class QuizApp:
         self.current_test = None
         self.current_test_key = None
 
-        f = tk.Frame(self.root, bg=BG)
+        f = tk.Frame(self.root, bg=self.BG)
         f.pack(expand=True, fill="both", padx=20, pady=15)
+
+        self._add_theme_toggle(f)
 
         tk.Label(f, text="РТН — подготовка к аттестации",
                  font=("Segoe UI", 22, "bold"),
-                 bg=BG, fg=ACCENT).pack(pady=(5, 3))
+                 bg=self.BG, fg=self.ACCENT).pack(pady=(5, 3))
         tk.Label(f, text="Выберите тест",
-                 font=("Segoe UI", 12), bg=BG, fg="#444").pack(pady=(0, 15))
+                 font=("Segoe UI", 12), bg=self.BG, fg=self.SUBTLE).pack(pady=(0, 15))
 
-        # --- сетка 4 колонки ---
-        grid = tk.Frame(f, bg=BG)
+        grid = tk.Frame(f, bg=self.BG)
         grid.pack(fill="x", padx=10)
         COLS = 4
         for c in range(COLS):
@@ -360,54 +498,49 @@ class QuizApp:
         self._add_footer(f)
 
     def _test_card(self, parent, row, col, test, covered, total, pct, acc):
-        """Плитка теста: цветная полоса, крупный процент, бар снизу."""
         CARD_W = 350
-        CARD_H = 250
-        stripe_color = self._pct_color(pct) if pct > 0 else "#d0d5da"
+        CARD_H = 200
+        stripe_color = self._pct_color(pct) if pct > 0 else self.STRIPE
 
-        card = tk.Frame(parent, bg=CARD, bd=1, relief="solid",
+        card = tk.Frame(parent, bg=self.CARD, bd=1, relief="solid",
                         width=CARD_W, height=CARD_H)
         card.grid(row=row, column=col, padx=8, pady=8)
         card.pack_propagate(False)
 
-        # Цветная полоса-индикатор сверху
         stripe = tk.Frame(card, bg=stripe_color, height=5)
         stripe.pack(fill="x")
 
-        inner = tk.Frame(card, bg=CARD)
+        inner = tk.Frame(card, bg=self.CARD)
         inner.pack(fill="both", expand=True, padx=14, pady=8)
 
-        # --- верх: код слева, точность справа ---
-        top = tk.Frame(inner, bg=CARD)
+        top = tk.Frame(inner, bg=self.CARD)
         top.pack(fill="x")
 
         tk.Label(top, text=test["code"],
                  font=("Segoe UI", 11, "bold"),
-                 bg=CARD, fg=ACCENT).pack(side="left")
+                 bg=self.CARD, fg=self.ACCENT).pack(side="left")
 
         if covered > 0:
             tk.Label(top, text=f"точность {acc}%",
                      font=("Segoe UI", 8),
-                     bg=CARD, fg="#999").pack(side="right")
+                     bg=self.CARD, fg=self.GREY).pack(side="right")
 
-        # --- центр: крупный процент ---
         tk.Label(inner, text=f"{pct}%",
                  font=("Segoe UI", 30, "bold"),
-                 bg=CARD, fg=stripe_color).pack(expand=True)
+                 bg=self.CARD, fg=stripe_color).pack(expand=True)
 
-        # --- низ: название, бар, число ---
-        bottom = tk.Frame(inner, bg=CARD)
+        bottom = tk.Frame(inner, bg=self.CARD)
         bottom.pack(fill="x", side="bottom")
 
         title_text = test["title"] if test["title"] else "—"
         tk.Label(bottom, text=title_text,
                  font=("Segoe UI", 8),
-                 bg=CARD, fg="#666",
+                 bg=self.CARD, fg=self.SUBTLE,
                  anchor="nw", justify="left",
                  wraplength=CARD_W - 30,
                  height=3).pack(fill="x")
 
-        bar_row = tk.Frame(bottom, bg=CARD)
+        bar_row = tk.Frame(bottom, bg=self.CARD)
         bar_row.pack(fill="x", pady=(3, 0))
 
         bar = ttk.Progressbar(bar_row, value=pct, maximum=100,
@@ -416,7 +549,7 @@ class QuizApp:
 
         tk.Label(bar_row, text=f"  {covered}/{total}",
                  font=("Segoe UI", 8),
-                 bg=CARD, fg="#888").pack(side="left")
+                 bg=self.CARD, fg=self.GREY).pack(side="left")
 
         self._bind_card_click(card, test)
 
@@ -431,12 +564,12 @@ class QuizApp:
 
     def _pct_color(self, pct):
         if pct >= 90:
-            return OK
+            return self.OK
         if pct >= 50:
             return "#b8860b"
         if pct > 0:
-            return ACCENT
-        return GREY
+            return self.ACCENT
+        return self.GREY
 
     def open_test(self, test):
         self.current_test = test
@@ -453,15 +586,15 @@ class QuizApp:
     # ---------------------------------------------------------- меню теста
     def show_menu(self):
         self._clear()
-        f = tk.Frame(self.root, bg=BG)
+        f = tk.Frame(self.root, bg=self.BG)
         f.pack(expand=True, fill="both", padx=40, pady=20)
 
         t = self.current_test
         tk.Label(f, text=t["code"], font=("Segoe UI", 28, "bold"),
-                 bg=BG, fg=ACCENT).pack(pady=(10, 0))
+                 bg=self.BG, fg=self.ACCENT).pack(pady=(10, 0))
         if t["title"]:
             tk.Label(f, text=t["title"], font=("Segoe UI", 11),
-                     bg=BG, fg="#444",
+                     bg=self.BG, fg=self.SUBTLE,
                      wraplength=800).pack(pady=(0, 20))
 
         def btn(text, cmd):
@@ -470,7 +603,6 @@ class QuizApp:
 
         total = len(self.questions)
 
-        # Сколько сейчас в списке ошибок
         cur = self.conn.cursor()
         mistakes_cnt = cur.execute(
             "SELECT COUNT(*) FROM stats WHERE test_key = ? AND is_mistake = 1",
@@ -564,35 +696,49 @@ class QuizApp:
         self.current_q = q
         self.answered = False
 
-        header = tk.Frame(self.root, bg=BG)
-        header.pack(fill="x", padx=30, pady=(15, 5))
+        # --- прогресс-бар сверху ---
+        progress_row = tk.Frame(self.root, bg=self.BG)
+        progress_row.pack(fill="x", padx=30, pady=(12, 0))
+        progress_value = (self.pos) / len(self.session) * 100 if self.session else 0
+        bar = ttk.Progressbar(progress_row,
+                              value=progress_value, maximum=100,
+                              style="Thin.Horizontal.TProgressbar")
+        bar.pack(fill="x")
+
+        header = tk.Frame(self.root, bg=self.BG)
+        header.pack(fill="x", padx=30, pady=(8, 5))
         tk.Label(header,
                  text=f"Вопрос {self.pos + 1} / {len(self.session)}",
-                 font=("Segoe UI", 11, "bold"), bg=BG,
-                 fg=ACCENT).pack(side="left")
+                 font=("Segoe UI", 11, "bold"), bg=self.BG,
+                 fg=self.ACCENT).pack(side="left")
         tk.Label(header, text=f"Правильно: {self.score}",
-                 font=("Segoe UI", 11), bg=BG).pack(side="right")
+                 font=("Segoe UI", 11), bg=self.BG, fg=self.TEXT).pack(side="right")
 
-        card = tk.Frame(self.root, bg=CARD, bd=1, relief="solid")
+        card = tk.Frame(self.root, bg=self.CARD, bd=1, relief="solid")
         card.pack(fill="both", expand=True, padx=30, pady=10)
 
         tk.Label(card, text=q["question"],
                  font=("Segoe UI", 13, "bold"),
-                 bg=CARD, wraplength=900, justify="left",
+                 bg=self.CARD, fg=self.TEXT,
+                 wraplength=900, justify="left",
                  anchor="w").pack(fill="x", padx=20, pady=(18, 12))
 
         hint = " (выберите несколько, 1–N)" if q.get("multi") else " (1–N)"
         tk.Label(card, text="Варианты ответа" + hint,
-                 font=("Segoe UI", 10, "italic"), bg=CARD, fg="#666",
+                 font=("Segoe UI", 10, "italic"),
+                 bg=self.CARD, fg=self.SUBTLE,
                  anchor="w").pack(fill="x", padx=20)
 
         if q.get("multi"):
             for i, opt in enumerate(q["options"], start=1):
                 v = tk.BooleanVar()
                 w = tk.Checkbutton(
-                    card, text=f"{i})  {opt}", variable=v, bg=CARD,
+                    card, text=f"{i})  {opt}", variable=v,
+                    bg=self.CARD, fg=self.TEXT,
+                    selectcolor=self.BG,
                     font=("Segoe UI", 11), wraplength=880,
-                    justify="left", anchor="w", activebackground=CARD)
+                    justify="left", anchor="w",
+                    activebackground=self.CARD, activeforeground=self.TEXT)
                 w.pack(fill="x", padx=30, pady=3)
                 self.check_vars.append(v)
                 self.option_widgets.append(w)
@@ -601,25 +747,30 @@ class QuizApp:
             for i, opt in enumerate(q["options"]):
                 w = tk.Radiobutton(
                     card, text=f"{i + 1})  {opt}",
-                    variable=self.selected_var, value=i, bg=CARD,
+                    variable=self.selected_var, value=i,
+                    bg=self.CARD, fg=self.TEXT,
+                    selectcolor=self.BG,
                     font=("Segoe UI", 11), wraplength=880,
-                    justify="left", anchor="w", activebackground=CARD)
+                    justify="left", anchor="w",
+                    activebackground=self.CARD, activeforeground=self.TEXT)
                 w.pack(fill="x", padx=30, pady=3)
                 self.option_widgets.append(w)
 
         self.feedback = tk.Label(card, text="",
                                  font=("Segoe UI", 11, "bold"),
-                                 bg=CARD, wraplength=900,
+                                 bg=self.CARD, fg=self.TEXT,
+                                 wraplength=900,
                                  justify="left", anchor="w")
         self.feedback.pack(fill="x", padx=20, pady=(10, 0))
 
         self.ref_label = tk.Label(card, text="",
                                   font=("Segoe UI", 9, "italic"),
-                                  bg=CARD, fg="#555", wraplength=900,
+                                  bg=self.CARD, fg=self.SUBTLE,
+                                  wraplength=900,
                                   justify="left", anchor="w")
         self.ref_label.pack(fill="x", padx=20, pady=(2, 15))
 
-        bottom = tk.Frame(self.root, bg=BG)
+        bottom = tk.Frame(self.root, bg=self.BG)
         bottom.pack(fill="x", padx=30, pady=(5, 20))
 
         ttk.Button(bottom, text="← В меню",
@@ -627,7 +778,7 @@ class QuizApp:
 
         tk.Label(bottom,
                  text="Клавиши 1–N — выбрать,  Enter — ответить/далее,  Esc — в меню",
-                 font=("Segoe UI", 9), bg=BG, fg=GREY).pack(side="left", padx=20)
+                 font=("Segoe UI", 9), bg=self.BG, fg=self.GREY).pack(side="left", padx=20)
 
         self.action_btn = ttk.Button(bottom, text="Ответить",
                                      command=self.check_answer)
@@ -691,10 +842,10 @@ class QuizApp:
         self._record(q["id"], is_ok, in_wrong_mode=(self.mode == "wrong"))
         if is_ok:
             self.score += 1
-            self.feedback.config(text="✅ Верно!", fg=OK)
+            self.feedback.config(text="✅ Верно!", fg=self.OK)
         else:
             self.feedback.config(
-                text="❌ Неверно. Правильный ответ выделен ниже.", fg=ERR)
+                text="❌ Неверно. Правильный ответ выделен ниже.", fg=self.ERR)
             self.wrong_ids.append(q["id"])
 
         self._highlight(correct)
@@ -707,7 +858,33 @@ class QuizApp:
 
     def _highlight(self, correct):
         for i, w in enumerate(self.option_widgets):
-            w.config(fg=OK if i in correct else GREY)
+            w.config(fg=self.OK if i in correct else self.GREY)
+
+    # ---------------------------------------------------------- круговая диаграмма
+    def _draw_donut(self, parent, pct, color, size=220):
+        canvas = tk.Canvas(parent, width=size, height=size,
+                           bg=self.BG, highlightthickness=0)
+        r = size // 2 - 20
+        cx = cy = size // 2
+        width = 18
+
+        # фон — кольцо
+        canvas.create_oval(cx - r, cy - r, cx + r, cy + r,
+                           outline=self.TRACK, width=width)
+
+        # дуга прогресса
+        if pct > 0:
+            extent = -min(pct, 100) * 3.6  # по часовой, от верхней точки
+            canvas.create_arc(cx - r, cy - r, cx + r, cy + r,
+                              start=90, extent=extent,
+                              outline=color, width=width,
+                              style="arc")
+
+        # текст по центру
+        canvas.create_text(cx, cy, text=f"{pct:.0f}%",
+                           font=("Segoe UI", int(size / 6), "bold"),
+                           fill=color)
+        return canvas
 
     # ---------------------------------------------------------- результат
     def show_result(self):
@@ -723,40 +900,47 @@ class QuizApp:
         total = len(self.session)
         pct = round(self.score / total * 100, 1) if total else 0
 
-        f = tk.Frame(self.root, bg=BG)
-        f.pack(expand=True, fill="both", padx=40, pady=30)
+        if pct >= 90:
+            color, msg, tag = self.OK, "Отличный результат!", "ЭКСПЕРТ"
+        elif pct >= 75:
+            color, msg, tag = "#b8860b", "Хорошо, но есть что подтянуть.", "УВЕРЕННО"
+        elif pct >= 50:
+            color, msg, tag = self.ACCENT, "Середина пути — продолжай.", "СРЕДНЕ"
+        else:
+            color, msg, tag = self.ERR, "Стоит повторить материал.", "НОВИЧОК"
+
+        f = tk.Frame(self.root, bg=self.BG)
+        f.pack(expand=True, fill="both", padx=40, pady=20)
 
         tk.Label(f, text="Результат",
                  font=("Segoe UI", 24, "bold"),
-                 bg=BG, fg=ACCENT).pack(pady=(20, 10))
-        tk.Label(f, text=f"{self.score} из {total}  ({pct}%)",
-                 font=("Segoe UI", 18), bg=BG).pack(pady=5)
+                 bg=self.BG, fg=self.ACCENT).pack(pady=(10, 15))
 
-        if pct >= 90:
-            color, msg = OK, "Отличный результат!"
-        elif pct >= 75:
-            color, msg = "#b8860b", "Хорошо, но есть что подтянуть."
-        else:
-            color, msg = ERR, "Стоит повторить материал."
+        self._draw_donut(f, pct, color).pack()
 
+        tk.Label(f, text=f"{self.score} из {total}",
+                 font=("Segoe UI", 16), bg=self.BG, fg=self.TEXT).pack(pady=(12, 5))
         tk.Label(f, text=msg, font=("Segoe UI", 13),
-                 bg=BG, fg=color).pack(pady=10)
+                 bg=self.BG, fg=color).pack(pady=(0, 5))
+        tk.Label(f, text=tag, font=("Segoe UI", 11, "bold"),
+                 bg=self.BG, fg=color).pack(pady=(0, 15))
 
         if self.mode == "wrong" and self.wrong_ids:
             tk.Label(f,
                      text=f"Осталось в списке ошибок: "
                           f"{len(self.wrong_ids)}",
-                     font=("Segoe UI", 11), bg=BG, fg="#555").pack(pady=(15, 0))
+                     font=("Segoe UI", 11), bg=self.BG,
+                     fg=self.SUBTLE).pack(pady=(5, 0))
         elif self.wrong_ids:
             tk.Label(f, text="Вопросы, где были ошибки:",
                      font=("Segoe UI", 11, "bold"),
-                     bg=BG).pack(pady=(20, 5))
+                     bg=self.BG, fg=self.TEXT).pack(pady=(10, 5))
             tk.Label(f, text=", ".join(map(str, self.wrong_ids)),
-                     font=("Segoe UI", 10), bg=BG,
+                     font=("Segoe UI", 10), bg=self.BG, fg=self.SUBTLE,
                      wraplength=800).pack()
 
         ttk.Button(f, text="Пройти ещё раз", style="Big.TButton",
-                   command=lambda: self.start(self.mode)).pack(pady=(30, 5))
+                   command=lambda: self.start(self.mode)).pack(pady=(20, 5))
         ttk.Button(f, text="В меню", style="Big.TButton",
                    command=self.show_menu).pack(pady=5)
 
@@ -765,12 +949,12 @@ class QuizApp:
     # ---------------------------------------------------------- статистика
     def show_stats(self):
         self._clear()
-        f = tk.Frame(self.root, bg=BG)
+        f = tk.Frame(self.root, bg=self.BG)
         f.pack(expand=True, fill="both", padx=30, pady=20)
 
         tk.Label(f, text=f"Статистика — {self.current_test['code']}",
                  font=("Segoe UI", 20, "bold"),
-                 bg=BG, fg=ACCENT).pack(pady=10)
+                 bg=self.BG, fg=self.ACCENT).pack(pady=10)
 
         cur = self.conn.cursor()
         rows = cur.execute(
@@ -795,10 +979,12 @@ class QuizApp:
             f"{(total_ok / (total_ok + total_fail) * 100) if (total_ok + total_fail) else 0:.1f}%"
         )
         tk.Label(f, text=info, font=("Segoe UI", 12),
-                 bg=BG, justify="left").pack(pady=15)
+                 bg=self.BG, fg=self.TEXT,
+                 justify="left").pack(pady=15)
 
         tk.Label(f, text="Последние сессии",
-                 font=("Segoe UI", 12, "bold"), bg=BG).pack(pady=(20, 5))
+                 font=("Segoe UI", 12, "bold"),
+                 bg=self.BG, fg=self.TEXT).pack(pady=(20, 5))
 
         cols = ("date", "mode", "total", "score")
         tree = ttk.Treeview(f, columns=cols, show="headings", height=10)
