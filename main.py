@@ -86,7 +86,7 @@ DEVELOPER = {
     "email":   "belyaev.m.m@nitros.ru",
     "org":     "АО НИТРО СИБИРЬ Норд Групп",
     "year":    "2026",
-    "version": "1.7.1",
+    "version": "1.8",
 }
 
 
@@ -181,6 +181,13 @@ class QuizApp:
         self.option_widgets = []
         self.check_vars = []
         self.selected_var = None
+
+        # состояние экзамена                                                    # ← NEW
+        self.exam_seconds_left = 0                                              # ← NEW
+        self.exam_timer_id = None                                               # ← NEW
+        self.exam_time_expired = False                                          # ← NEW
+        self.exam_total_time = 0                                                # ← NEW
+        self.timer_label = None                                                 # ← NEW
 
         self._build_style()
         self._restore_window_state()
@@ -288,7 +295,6 @@ class QuizApp:
         style = ttk.Style()
         style.theme_use("clam")
 
-        # --- обычная кнопка ---
         style.configure("TButton",
                         font=("Segoe UI", 11),
                         padding=8,
@@ -306,7 +312,6 @@ class QuizApp:
                               ("!disabled", self.TEXT)],
                   bordercolor=[("active",  self.ACCENT)])
 
-        # --- большая кнопка (меню теста) ---
         style.configure("Big.TButton",
                         font=("Segoe UI", 12, "bold"),
                         padding=12,
@@ -324,7 +329,6 @@ class QuizApp:
                               ("!disabled", self.TEXT)],
                   bordercolor=[("active",  self.ACCENT)])
 
-        # --- прогресс-бары ---
         style.configure("Test.Horizontal.TProgressbar",
                         background=self.ACCENT,
                         troughcolor=self.TRACK,
@@ -420,7 +424,6 @@ class QuizApp:
 
     # ---------------------------------------------------------- переключатель темы
     def _add_theme_toggle(self, parent):
-        """Маленькая иконка 🌙/☀ в правом верхнем углу экрана."""
         is_light = self.settings.get("theme", "light") == "light"
         icon = "🌙" if is_light else "☀"
         hint = "Тёмная тема" if is_light else "Светлая тема"
@@ -443,6 +446,7 @@ class QuizApp:
 
     # ---------------------------------------------------------- выбор теста
     def show_test_select(self):
+        self._stop_exam_timer()                                                  # ← NEW
         self._clear()
         self.current_test = None
         self.current_test_key = None
@@ -585,6 +589,7 @@ class QuizApp:
 
     # ---------------------------------------------------------- меню теста
     def show_menu(self):
+        self._stop_exam_timer()                                                  # ← NEW
         self._clear()
         f = tk.Frame(self.root, bg=self.BG)
         f.pack(expand=True, fill="both", padx=40, pady=20)
@@ -609,6 +614,8 @@ class QuizApp:
             (self.current_test_key,)).fetchone()[0]
         wrong_label = f"🔁  Работа над ошибками ({mistakes_cnt})"
 
+        btn(f"🎓  Экзамен: {total} вопросов с таймером",                         # ← NEW
+            lambda: self._start_exam_dialog())                                   # ← NEW
         btn(f"🏁  Марафон: {total} вопросов вразнобой",
             lambda: self.start("all"))
         btn(f"📚  Все вопросы по порядку ({total})",
@@ -667,6 +674,197 @@ class QuizApp:
         self.mode = mode
         self.show_question()
 
+    # ---------------------------------------------------------- экзамен: настройка
+    def _start_exam_dialog(self):
+        total_q = len(self.questions)
+        d = tk.Toplevel(self.root)
+        d.title("Параметры экзамена")
+        d.configure(bg=self.BG)
+        d.transient(self.root)
+        d.resizable(False, False)
+
+        default_q = int(self.settings.get("exam_questions", min(30, total_q)))
+        default_min = int(self.settings.get("exam_minutes", 30))
+        default_pct = int(self.settings.get("exam_pass_pct", 75))
+        default_q = max(1, min(default_q, total_q))
+
+        tk.Label(d, text="Параметры экзамена",
+                 font=("Segoe UI", 14, "bold"),
+                 bg=self.BG, fg=self.ACCENT
+                 ).grid(row=0, column=0, columnspan=3, padx=20, pady=(15, 10))
+
+        # --- Количество вопросов ---
+        tk.Label(d, text="Количество вопросов:",
+                 font=("Segoe UI", 11), bg=self.BG, fg=self.TEXT
+                 ).grid(row=1, column=0, sticky="w", padx=20, pady=6)
+        q_var = tk.IntVar(value=default_q)
+        tk.Spinbox(d, from_=1, to=total_q, textvariable=q_var,
+                   width=10, font=("Segoe UI", 11),
+                   bg=self.CARD, fg=self.TEXT, insertbackground=self.TEXT,
+                   relief="solid", bd=1).grid(row=1, column=1,
+                                              padx=20, pady=6, sticky="e")
+
+        # --- Время ---
+        tk.Label(d, text="Время (минут):",
+                 font=("Segoe UI", 11), bg=self.BG, fg=self.TEXT
+                 ).grid(row=2, column=0, sticky="w", padx=20, pady=6)
+        t_var = tk.IntVar(value=default_min)
+        tk.Spinbox(d, from_=1, to=300, textvariable=t_var,
+                   width=10, font=("Segoe UI", 11),
+                   bg=self.CARD, fg=self.TEXT, insertbackground=self.TEXT,
+                   relief="solid", bd=1).grid(row=2, column=1,
+                                              padx=20, pady=6, sticky="e")
+
+        # --- Порог сдачи + живой информер ---
+        tk.Label(d, text="Порог сдачи (%):",
+                 font=("Segoe UI", 11), bg=self.BG, fg=self.TEXT
+                 ).grid(row=3, column=0, sticky="w", padx=20, pady=6)
+        p_var = tk.IntVar(value=default_pct)
+        tk.Spinbox(d, from_=1, to=100, textvariable=p_var,
+                   width=10, font=("Segoe UI", 11),
+                   bg=self.CARD, fg=self.TEXT, insertbackground=self.TEXT,
+                   relief="solid", bd=1).grid(row=3, column=1,
+                                              padx=20, pady=6, sticky="e")
+
+        info_var = tk.StringVar(value="")
+        info_lbl = tk.Label(d, textvariable=info_var,
+                            font=("Segoe UI", 10, "bold"),
+                            bg=self.BG, fg=self.ACCENT,
+                            anchor="w", justify="left")
+        info_lbl.grid(row=3, column=2, sticky="w", padx=(0, 20))
+
+        def _update_info(*_):
+            try:
+                nq = int(q_var.get())
+                np_ = int(p_var.get())
+            except (tk.TclError, ValueError):
+                info_var.set("")
+                return
+            nq = max(1, min(nq, total_q))
+            np_ = max(1, min(np_, 100))
+            need = math.ceil(nq * np_ / 100)
+            mistakes = nq - need
+            if mistakes <= 0:
+                info_var.set(f"⚠  Ошибок нет —\nнужно верно на все {nq}")
+                info_lbl.config(fg=self.ERR)
+            elif mistakes == 1:
+                info_var.set(f"Можно ошибиться: 1 из {nq}")
+                info_lbl.config(fg=self.ACCENT)
+            else:
+                info_var.set(f"Можно ошибиться: {mistakes} из {nq}")
+                info_lbl.config(fg=self.ACCENT)
+
+        q_var.trace_add("write", _update_info)
+        p_var.trace_add("write", _update_info)
+        _update_info()
+
+        # --- Подсказка ---
+        tk.Label(d,
+                 text=("Во время экзамена правильные ответы\n"
+                       "и источники не показываются."),
+                 font=("Segoe UI", 9, "italic"),
+                 bg=self.BG, fg=self.SUBTLE, justify="center"
+                 ).grid(row=4, column=0, columnspan=3, pady=(10, 5))
+
+        # --- Кнопки ---
+        btn_row = tk.Frame(d, bg=self.BG)
+        btn_row.grid(row=5, column=0, columnspan=3, pady=(10, 15))
+
+        def on_ok():
+            try:
+                nq = int(q_var.get())
+                nm = int(t_var.get())
+                np_ = int(p_var.get())
+            except Exception:
+                return
+            nq = max(1, min(nq, total_q))
+            nm = max(1, min(nm, 300))
+            np_ = max(1, min(np_, 100))
+            self.settings["exam_questions"] = nq
+            self.settings["exam_minutes"] = nm
+            self.settings["exam_pass_pct"] = np_
+            self._save_settings()
+            d.grab_release()
+            d.destroy()
+            self._start_exam(nq, nm)
+
+        ttk.Button(btn_row, text="Начать", style="Big.TButton",
+                   command=on_ok).pack(side="left", padx=5)
+        ttk.Button(btn_row, text="Отмена", style="Big.TButton",
+                   command=d.destroy).pack(side="left", padx=5)
+
+        d.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - d.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - d.winfo_height()) // 3
+        d.geometry(f"+{max(0, x)}+{max(0, y)}")
+        try:
+            d.grab_set()
+            d.focus_set()
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------- экзамен: запуск
+    def _start_exam(self, nq, minutes):                                          # ← NEW
+        ids = [q["id"] for q in self.questions]
+        random.shuffle(ids)
+        ids = ids[:nq]
+
+        self.session = ids
+        self.pos = 0
+        self.score = 0
+        self.wrong_ids = []
+        self.mode = "exam"
+        self.exam_total_time = minutes * 60
+        self.exam_seconds_left = minutes * 60
+        self.exam_time_expired = False
+        self.timer_label = None
+        self.show_question()
+        self._schedule_exam_tick()
+
+    def _schedule_exam_tick(self):                                               # ← NEW
+        self._stop_exam_timer()
+        self.exam_timer_id = self.root.after(1000, self._tick_exam)
+
+    def _tick_exam(self):                                                        # ← NEW
+        self.exam_timer_id = None
+        if self.mode != "exam":
+            return
+        if self.exam_seconds_left <= 0:
+            return
+
+        self.exam_seconds_left -= 1
+
+        if self.timer_label is not None and self.timer_label.winfo_exists():
+            remaining = self.exam_seconds_left
+            color = self.ERR if remaining <= 60 else self.ACCENT
+            self.timer_label.config(text=f"⏱  {self._format_time(remaining)}",
+                                    fg=color)
+
+        if self.exam_seconds_left <= 0:
+            self.exam_time_expired = True
+            self._finish_exam_by_time()
+        else:
+            self._schedule_exam_tick()
+
+    def _stop_exam_timer(self):                                                  # ← NEW
+        if self.exam_timer_id is not None:
+            try:
+                self.root.after_cancel(self.exam_timer_id)
+            except Exception:
+                pass
+            self.exam_timer_id = None
+
+    def _finish_exam_by_time(self):                                              # ← NEW
+        self._stop_exam_timer()
+        if self.mode == "exam":
+            self.show_result()
+
+    @staticmethod
+    def _format_time(sec: int) -> str:                                           # ← NEW
+        sec = max(0, int(sec))
+        m, s = divmod(sec, 60)
+        return f"{m:02d}:{s:02d}"
+
     # ---------------------------------------------------------- подготовка
     def _prepare_question(self, q):
         q = dict(q)
@@ -695,8 +893,10 @@ class QuizApp:
         q = self._prepare_question(raw)
         self.current_q = q
         self.answered = False
+        self.timer_label = None                                                  # ← NEW
 
-        # --- прогресс-бар сверху ---
+        is_exam = (self.mode == "exam")                                          # ← NEW
+
         progress_row = tk.Frame(self.root, bg=self.BG)
         progress_row.pack(fill="x", padx=30, pady=(12, 0))
         progress_value = (self.pos) / len(self.session) * 100 if self.session else 0
@@ -708,11 +908,24 @@ class QuizApp:
         header = tk.Frame(self.root, bg=self.BG)
         header.pack(fill="x", padx=30, pady=(8, 5))
         tk.Label(header,
-                 text=f"Вопрос {self.pos + 1} / {len(self.session)}",
+                 text=(f"🎓 Экзамен: вопрос {self.pos + 1} / {len(self.session)}"
+                       if is_exam else
+                       f"Вопрос {self.pos + 1} / {len(self.session)}"),
                  font=("Segoe UI", 11, "bold"), bg=self.BG,
                  fg=self.ACCENT).pack(side="left")
-        tk.Label(header, text=f"Правильно: {self.score}",
-                 font=("Segoe UI", 11), bg=self.BG, fg=self.TEXT).pack(side="right")
+
+        if is_exam:                                                              # ← NEW
+            self.timer_label = tk.Label(
+                header,
+                text=f"⏱  {self._format_time(self.exam_seconds_left)}",
+                font=("Segoe UI", 13, "bold"),
+                bg=self.BG,
+                fg=(self.ERR if self.exam_seconds_left <= 60 else self.ACCENT))
+            self.timer_label.pack(side="right")
+        else:
+            tk.Label(header, text=f"Правильно: {self.score}",
+                     font=("Segoe UI", 11), bg=self.BG,
+                     fg=self.TEXT).pack(side="right")
 
         card = tk.Frame(self.root, bg=self.CARD, bd=1, relief="solid")
         card.pack(fill="both", expand=True, padx=30, pady=10)
@@ -776,12 +989,20 @@ class QuizApp:
         ttk.Button(bottom, text="← В меню",
                    command=self.show_menu).pack(side="left")
 
-        tk.Label(bottom,
-                 text="Клавиши 1–N — выбрать,  Enter — ответить/далее,  Esc — в меню",
-                 font=("Segoe UI", 9), bg=self.BG, fg=self.GREY).pack(side="left", padx=20)
+        if is_exam:                                                              # ← NEW
+            hint_text = ("Клавиши 1–N — выбрать,  Enter — ответить и сразу далее,  "
+                         "Esc — прервать экзамен")
+        else:
+            hint_text = ("Клавиши 1–N — выбрать,  Enter — ответить/далее,  "
+                         "Esc — в меню")
+        tk.Label(bottom, text=hint_text,
+                 font=("Segoe UI", 9), bg=self.BG, fg=self.GREY
+                 ).pack(side="left", padx=20)
 
-        self.action_btn = ttk.Button(bottom, text="Ответить",
-                                     command=self.check_answer)
+        self.action_btn = ttk.Button(
+            bottom,
+            text=("Ответить →" if is_exam else "Ответить"),
+            command=self.check_answer)
         self.action_btn.pack(side="right")
 
         self._bind_question_keys()
@@ -795,7 +1016,18 @@ class QuizApp:
                                self._make_number_handler(i - 1))
         self.root.bind_all("<Return>",   lambda e: self._on_enter())
         self.root.bind_all("<KP_Enter>", lambda e: self._on_enter())
-        self.root.bind_all("<Escape>",   lambda e: self.show_menu())
+        self.root.bind_all("<Escape>",   lambda e: self._on_escape())            # ← NEW
+
+    def _on_escape(self):                                                        # ← NEW
+        if self.mode == "exam":
+            if messagebox.askyesno(
+                    "Прервать экзамен?",
+                    "Прервать экзамен? Результат будет сохранён "
+                    "по отвеченным вопросам."):
+                self._stop_exam_timer()
+                self.show_result()
+        else:
+            self.show_menu()
 
     def _make_number_handler(self, idx):
         def handler(_event):
@@ -826,6 +1058,28 @@ class QuizApp:
         if q is None:
             return
 
+        is_exam = (self.mode == "exam")                                          # ← NEW
+
+        if is_exam:                                                              # ← NEW
+            # В режиме экзамена нет промежуточной проверки:
+            # сразу считаем ответ, пишем в БД и переходим к следующему.
+            sel = self._selected(q)
+            if not sel:
+                messagebox.showwarning("Ответ",
+                                       "Выберите хотя бы один вариант.")
+                return
+            correct = set(q["correct"])
+            is_ok = sel == correct
+            self._record(q["id"], is_ok)
+            if is_ok:
+                self.score += 1
+            else:
+                self.wrong_ids.append(q["id"])
+            self.pos += 1
+            self.show_question()
+            return
+
+        # --- обычный режим (не экзамен) ---
         if self.answered:
             self.pos += 1
             self.show_question()
@@ -868,19 +1122,16 @@ class QuizApp:
         cx = cy = size // 2
         width = 18
 
-        # фон — кольцо
         canvas.create_oval(cx - r, cy - r, cx + r, cy + r,
                            outline=self.TRACK, width=width)
 
-        # дуга прогресса
         if pct > 0:
-            extent = -min(pct, 100) * 3.6  # по часовой, от верхней точки
+            extent = -min(pct, 100) * 3.6
             canvas.create_arc(cx - r, cy - r, cx + r, cy + r,
                               start=90, extent=extent,
                               outline=color, width=width,
                               style="arc")
 
-        # текст по центру
         canvas.create_text(cx, cy, text=f"{pct:.0f}%",
                            font=("Segoe UI", int(size / 6), "bold"),
                            fill=color)
@@ -888,6 +1139,8 @@ class QuizApp:
 
     # ---------------------------------------------------------- результат
     def show_result(self):
+        self._stop_exam_timer()                                                  # ← NEW
+
         self._clear()
         cur = self.conn.cursor()
         cur.execute(
@@ -900,29 +1153,47 @@ class QuizApp:
         total = len(self.session)
         pct = round(self.score / total * 100, 1) if total else 0
 
-        if pct >= 90:
-            color, msg, tag = self.OK, "Отличный результат!", "ЭКСПЕРТ"
-        elif pct >= 75:
-            color, msg, tag = "#b8860b", "Хорошо, но есть что подтянуть.", "УВЕРЕННО"
-        elif pct >= 50:
-            color, msg, tag = self.ACCENT, "Середина пути — продолжай.", "СРЕДНЕ"
+        is_exam = (self.mode == "exam")                                          # ← NEW
+
+        if is_exam:                                                              # ← NEW
+            pass_pct = int(self.settings.get("exam_pass_pct", 75))
+            passed = pct >= pass_pct
+            color = self.OK if passed else self.ERR
+            tag = "СДАНО" if passed else "НЕ СДАНО"
+            msg = (f"Порог сдачи: {pass_pct}%" if not passed
+                   else f"Отличный результат! Порог {pass_pct}% пройден.")
         else:
-            color, msg, tag = self.ERR, "Стоит повторить материал.", "НОВИЧОК"
+            if pct >= 90:
+                color, msg, tag = self.OK, "Отличный результат!", "ЭКСПЕРТ"
+            elif pct >= 75:
+                color, msg, tag = "#b8860b", "Хорошо, но есть что подтянуть.", "УВЕРЕННО"
+            elif pct >= 50:
+                color, msg, tag = self.ACCENT, "Середина пути — продолжай.", "СРЕДНЕ"
+            else:
+                color, msg, tag = self.ERR, "Стоит повторить материал.", "НОВИЧОК"
 
         f = tk.Frame(self.root, bg=self.BG)
         f.pack(expand=True, fill="both", padx=40, pady=20)
 
-        tk.Label(f, text="Результат",
+        title = "Экзамен завершён" if is_exam else "Результат"
+        tk.Label(f, text=title,
                  font=("Segoe UI", 24, "bold"),
                  bg=self.BG, fg=self.ACCENT).pack(pady=(10, 15))
 
         self._draw_donut(f, pct, color).pack()
 
+        if is_exam and self.exam_time_expired:                                   # ← NEW
+            tk.Label(f, text="⏱  Время истекло",
+                     font=("Segoe UI", 11, "italic"),
+                     bg=self.BG, fg=self.SUBTLE).pack(pady=(8, 0))
+
         tk.Label(f, text=f"{self.score} из {total}",
-                 font=("Segoe UI", 16), bg=self.BG, fg=self.TEXT).pack(pady=(12, 5))
-        tk.Label(f, text=msg, font=("Segoe UI", 13),
-                 bg=self.BG, fg=color).pack(pady=(0, 5))
-        tk.Label(f, text=tag, font=("Segoe UI", 11, "bold"),
+                 font=("Segoe UI", 16), bg=self.BG, fg=self.TEXT
+                 ).pack(pady=(12, 5))
+        tk.Label(f, text=tag,
+                 font=("Segoe UI", 20, "bold"),
+                 bg=self.BG, fg=color).pack(pady=(2, 5))
+        tk.Label(f, text=msg, font=("Segoe UI", 12),
                  bg=self.BG, fg=color).pack(pady=(0, 15))
 
         if self.mode == "wrong" and self.wrong_ids:
@@ -931,7 +1202,7 @@ class QuizApp:
                           f"{len(self.wrong_ids)}",
                      font=("Segoe UI", 11), bg=self.BG,
                      fg=self.SUBTLE).pack(pady=(5, 0))
-        elif self.wrong_ids:
+        elif self.wrong_ids and not is_exam:
             tk.Label(f, text="Вопросы, где были ошибки:",
                      font=("Segoe UI", 11, "bold"),
                      bg=self.BG, fg=self.TEXT).pack(pady=(10, 5))
@@ -939,15 +1210,18 @@ class QuizApp:
                      font=("Segoe UI", 10), bg=self.BG, fg=self.SUBTLE,
                      wraplength=800).pack()
 
-        ttk.Button(f, text="Пройти ещё раз", style="Big.TButton",
-                   command=lambda: self.start(self.mode)).pack(pady=(20, 5))
-        ttk.Button(f, text="В меню", style="Big.TButton",
-                   command=self.show_menu).pack(pady=5)
+        btn_row = tk.Frame(f, bg=self.BG)
+        btn_row.pack(pady=(20, 5))
+        ttk.Button(btn_row, text="Пройти ещё раз", style="Big.TButton",
+                   command=lambda: self.start(self.mode)).pack(side="left", padx=5)
+        ttk.Button(btn_row, text="В меню", style="Big.TButton",
+                   command=self.show_menu).pack(side="left", padx=5)
 
         self._add_footer(f)
 
     # ---------------------------------------------------------- статистика
     def show_stats(self):
+        self._stop_exam_timer()                                                  # ← NEW
         self._clear()
         f = tk.Frame(self.root, bg=self.BG)
         f.pack(expand=True, fill="both", padx=30, pady=20)
@@ -999,6 +1273,7 @@ class QuizApp:
             "all_ordered": "По порядку",
             "random": "20 случайных",
             "wrong": "Ошибки",
+            "exam": "Экзамен",
         }
         for r in cur.execute(
                 "SELECT date, mode, total, score FROM sessions "
